@@ -130,3 +130,6 @@ dmypy.json
 
 # ignore the dataset
 data/*
+
+# system files
+.DS_Store

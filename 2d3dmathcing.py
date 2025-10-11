@@ -34,10 +34,14 @@ def pnpsolver(query, model, cameraMatrix=0, distortion=0):
     matches = matcher.knnMatch(desc_query, desc_model, k=2)
     good_matches = []
     LOWE_RATIO = 0.7
-    for m, n in matches:
-        if m.distance < LOWE_RATIO * n.distance:
-            good_matches.append(m)
-    # print(f"Number of matches: {len(matches)} -> {len(good_matches)} ")
+    # Vectorized Lowe's ratio test for speed
+    matches = np.array(matches)
+    if len(matches) > 0:
+        distances = np.array([[m[0].distance, m[1].distance] for m in matches])
+        mask = distances[:, 0] < LOWE_RATIO * distances[:, 1]
+        good_matches = [m[0] for m, keep in zip(matches, mask) if keep]
+    else:
+        good_matches = []
     pts2d = np.float32([kp_query[m.queryIdx] for m in good_matches])
     pts3d = np.float32([kp_model[m.trainIdx] for m in good_matches])
     kp_query = pts2d
@@ -63,23 +67,21 @@ def rotation_error(rotq_gt, rotq_est):
 
 def translation_error(t1, t2):
     #TODO: calculate translation error
+    if t1.dtype == np.dtype('O'):
+        t1 = t1.astype(np.float64)
+    if t2.dtype == np.dtype('O'):
+        t2 = t2.astype(np.float64)
     err = np.linalg.norm(np.abs(t1 - t2), ord=2)
     return err
 
 def visualization(o3d_parameters, points3D_df):
     # === 1. 讀取點雲 ===
+    # Vectorized version for speed
     pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector()
-    pcd.colors = o3d.utility.Vector3dVector()
-    for row in points3D_df.itertuples():
-        assert len(row.XYZ) == 3
-        assert len(row.RGB) == 3
-        pcd.points.append(row.XYZ)
-        pcd.colors.append(row.RGB / 255.0)
-
-    # pcd.points = o3d.utility.Vector3dVector(points3D_df[["XYZ"]].values.reshape(-1).astype(np.float64))
-    # pcd.colors = o3d.utility.Vector3dVector(points3D_df[["RGB"]].values.reshape(-1).astype(np.float64) / 255.0)
-    # pcd.paint_uniform_color([0.7, 0.7, 0.7])
+    xyz = np.vstack(points3D_df["XYZ"].to_numpy())
+    rgb = np.vstack(points3D_df["RGB"].to_numpy()) / 255.0
+    pcd.points = o3d.utility.Vector3dVector(xyz)
+    pcd.colors = o3d.utility.Vector3dVector(rgb)
 
     # === 2. 建立所有相機的視覺化幾何 ===
     cameras = []
@@ -111,23 +113,30 @@ def visualization(o3d_parameters, points3D_df):
     traj.paint_uniform_color([0, 1, 0])  # 綠色軌跡
 
     # === 4. 一起繪出 ===
-    o3d.visualization.draw_geometries([pcd, traj, *cameras])
-    # o3d.visualization.draw_geometries([traj, *cameras])
+    o3d.visualization.draw_geometries([pcd, traj, *cameras], up=[0, -1, 0], front=[0,0,-1], zoom=0.4)
 
 if __name__ == "__main__":
     # Load data
-    images_df = pd.read_pickle("data/images.pkl")
-    train_df = pd.read_pickle("data/train.pkl")
-    points3D_df = pd.read_pickle("data/points3D.pkl")
-    point_desc_df = pd.read_pickle("data/point_desc.pkl")
-
+    PREFIX = "" if os.getcwd().endswith("homework2-xh-cham") else "homework2-xh-cham/"
+    images_df = pd.read_pickle(f"{PREFIX}data/images.pkl")
+    # sort images_df by the number at the end of NAME column
+    # NAME example: train_img1.jpg, train_img100.jpg, valid_img5.jpg
+    tmp = lambda x: (0 if x.startswith("train") else 1,  # train 放前面
+            int(x.split(".")[0].split("_img")[-1]))  # 按編號排序
+    images_df = images_df.sort_values(
+        by="NAME",
+        key=lambda col: col.apply(tmp)
+    )
+    train_df = pd.read_pickle(f"{PREFIX}data/train.pkl")
+    points3D_df = pd.read_pickle(f"{PREFIX}data/points3D.pkl")
+    point_desc_df = pd.read_pickle(f"{PREFIX}data/point_desc.pkl")
     # Process model descriptors
     desc_df = average_desc(train_df, points3D_df)
     kp_model = np.array(desc_df["XYZ"].to_list())
     desc_model = np.array(desc_df["DESCRIPTORS"].to_list()).astype(np.float32)
 
 
-    IMAGE_ID_LIST = list(range(1,15))
+    IMAGE_ID_LIST = list(range(163, 293))  # 0-163: train, 163:293 valid
     # IMAGE_ID_LIST = list(range(1,294))
     r_list = []
     t_list = []
@@ -135,23 +144,26 @@ if __name__ == "__main__":
     translation_error_list = []
     for idx in tqdm(IMAGE_ID_LIST):
         # Load query image
-        fname = (images_df.loc[images_df["IMAGE_ID"] == idx])["NAME"].values[0]
-        rimg = cv2.imread("data/frames/" + fname, cv2.IMREAD_GRAYSCALE)
+        current_id = (images_df.iloc[idx])["IMAGE_ID"]
+        # fname = (images_df.iloc[idx])["NAME"]
+        fname = (images_df.loc[images_df["IMAGE_ID"] == current_id])["NAME"].values[0]
+        rimg = cv2.imread(f"{PREFIX}data/frames/" + fname, cv2.IMREAD_GRAYSCALE)
 
         # Load query keypoints and descriptors
-        points = point_desc_df.loc[point_desc_df["IMAGE_ID"] == idx]
+        points = point_desc_df.loc[point_desc_df["IMAGE_ID"] == current_id]
         kp_query = np.array(points["XY"].to_list())
         desc_query = np.array(points["DESCRIPTORS"].to_list()).astype(np.float32)
 
         # Find correspondance and solve pnp
         retval, rvec, tvec, inliers = pnpsolver((kp_query, desc_query), (kp_model, desc_model))
         rotq = R.from_rotvec(rvec.reshape(1,3)).as_quat() # Convert rotation vector to quaternion in shape (1,4) [x,y,z,w]
-        tvec = tvec.reshape(1,3) # Reshape translation vector
+        # tvec = tvec.reshape(1,3) # Reshape translation vector
         r_list.append(rvec)
         t_list.append(tvec)
 
         # Get camera pose groudtruth
-        ground_truth = images_df.loc[images_df["IMAGE_ID"]==idx]
+        # ground_truth = images_df.loc[images_df["IMAGE_ID"]==idx]
+        ground_truth = images_df.iloc[idx]
         rotq_gt = ground_truth[["QX","QY","QZ","QW"]].values
         tvec_gt = ground_truth[["TX","TY","TZ"]].values
 
@@ -162,10 +174,10 @@ if __name__ == "__main__":
         translation_error_list.append(t_error)
 
     # TODO: calculate median of relative rotation angle differences and translation differences and print them
-    # r_error_median = np.median(rotation_error_list)
-    # t_error_median = np.median(translation_error_list)
-    # print(f"Rotation error median (degrees): {r_error_median:.4f}")
-    # print(f"Translation error median: {t_error_median:.4f}")
+    r_error_median = np.median(rotation_error_list)
+    t_error_median = np.median(translation_error_list)
+    print(f"Rotation error median (degrees): {r_error_median:.4f}")
+    print(f"Translation error median: {t_error_median:.4f}")
 
     # TODO: result visualization
     # Camera2World_Transform_Matrixs = []
@@ -183,4 +195,5 @@ if __name__ == "__main__":
         param.extrinsic = c2w
         param.intrinsic = intrinsic
         o3d_parameters.append(param)
+    np.save('camera_params.npy', o3d_parameters)
     visualization(o3d_parameters, points3D_df)
