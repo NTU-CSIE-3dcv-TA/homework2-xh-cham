@@ -7,10 +7,53 @@ import time
 import open3d as o3d
 import os
 
-from tqdm import tqdm
+from tqdm import tqdm, trange
 
 np.random.seed(1428) # do not change this seed
 random.seed(1428) # do not change this seed
+
+def my_RANSAC_pnp(pts3d, pts2d, cameraMatrix, distCoeffs, max_iter=2000, err_threshold=3):
+    """
+    使用 RANSAC 從點中挑出 4 個點，以使用 PnP 得到 camera pose
+    
+    params:
+        pts3d: list of (3,) ndarray, 3D points in world coordinate system
+        pts2d: list of (2,) ndarray, 2D points in image coordinate system
+        max_iter: 最大迭代次數
+        err_threshold: reprojection error threshold to determine inliers (in pixels)
+    
+    returns:
+        rtval: bool, PnP 是否成功
+        rvec: (3,) ndarray, rotation vector
+        tvec: (3,) ndarray, translation vector
+        inliers: (M,) ndarray, 內點的索引
+    """
+    best_inliers = []
+    for _ in trange(max_iter, desc="RANSAC PnP", leave=False):
+        sample_idx = np.random.choice(len(pts3d), 4, replace=False)
+        sample_pts3d = pts3d[sample_idx]
+        sample_pts2d = pts2d[sample_idx]
+        _, rvecs, tvecs = cv2.solveP3P(sample_pts3d, sample_pts2d, cameraMatrix, distCoeffs, flags=cv2.SOLVEPNP_AP3P)
+        
+        # reprojection
+        for rvec, tvec in zip(rvecs, tvecs):
+            r_mat = R.from_rotvec(rvec.reshape(1,3)).as_matrix()
+            projected_pts = (cameraMatrix @ (r_mat @ pts3d.T + tvec)).T
+            projected_pts = projected_pts[:, :2] / projected_pts[:, 2:3]
+            projected_pts = projected_pts.reshape(-1, 2)
+            errs = np.linalg.norm(projected_pts - pts2d, axis=1)
+
+            # count inliers
+            inliers = np.where(errs < err_threshold)[0]
+            if len(inliers) > len(best_inliers):
+                best_inliers = inliers
+                # best_pose = (rvec, tvec)
+
+    _, rvec, tvec = cv2.solvePnP(pts3d[best_inliers], pts2d[best_inliers], cameraMatrix, distCoeffs, flags=cv2.SOLVEPNP_ITERATIVE)
+    
+    inliers_ratio = len(best_inliers) / len(pts3d) if len(pts3d) > 0 else 0
+
+    return len(best_inliers) >= 4, np.array(rvec), np.array(tvec), np.array(best_inliers), inliers_ratio
 
 def average(x):
     return list(np.mean(x,axis=0))
@@ -23,7 +66,7 @@ def average_desc(train_df, points3D_df):
     desc = desc.join(points3D_df.set_index("POINT_ID"), on="POINT_ID")
     return desc
 
-def pnpsolver(query, model, cameraMatrix=0, distortion=0):
+def pnpsolver(query, model):
     kp_query, desc_query = query
     kp_model, desc_model = model
     cameraMatrix = np.array([[1868.27,0,540],[0,1869.18,960],[0,0,1]])
@@ -47,12 +90,13 @@ def pnpsolver(query, model, cameraMatrix=0, distortion=0):
     kp_query = pts2d
     # print("Start solving PnP...")
     # start_time = time.time()
-    retval, rvec, tvec, inliers = cv2.solvePnPRansac(pts3d, pts2d, cameraMatrix, distCoeffs, flags=cv2.SOLVEPNP_P3P)
+    # retval, rvec, tvec, inliers = cv2.solvePnPRansac(pts3d, pts2d, cameraMatrix, distCoeffs, flags=cv2.SOLVEPNP_P3P)
+    retval, rvec, tvec, inliers, inliers_ratio = my_RANSAC_pnp(pts3d, pts2d, cameraMatrix, distCoeffs, err_threshold=2)
     # end_time = time.time()
 
     # print(f"PnP solved in {time.strftime('%H:%M:%S', time.gmtime(end_time - start_time))} with {len(inliers)} inliers")
     # Hint: you may use "Descriptors Matching and ratio test" first
-    return retval, rvec, tvec, inliers
+    return retval, rvec, tvec, inliers, inliers_ratio
 
 def rotation_error(rotq_gt, rotq_est):
     #TODO: calculate rotation error
@@ -140,12 +184,13 @@ if __name__ == "__main__":
 
     images_df = sort_by_image_id(images_df)
 
-    IMAGE_ID_LIST = list(range(163, 293))  # 0-163: train, 163:293 valid
+    IMAGE_ID_LIST = list(range(163, 293, 15))  # 0-163: train, 163:293 valid
     # IMAGE_ID_LIST = list(range(1,294))
     r_list = []
     t_list = []
     rotation_error_list = []
     translation_error_list = []
+    inliers_ratio = 1
     for idx in tqdm(IMAGE_ID_LIST):
         # Load query image
         current_id = (images_df.iloc[idx])["IMAGE_ID"]
@@ -159,14 +204,14 @@ if __name__ == "__main__":
         desc_query = np.array(points["DESCRIPTORS"].to_list()).astype(np.float32)
 
         # Find correspondance and solve pnp
-        retval, rvec, tvec, inliers = pnpsolver((kp_query, desc_query), (kp_model, desc_model))
+        retval, rvec, tvec, inliers, inliers_ratio = pnpsolver((kp_query, desc_query), (kp_model, desc_model))
+        # tqdm.write(f"Current inliers ratio: {inliers_ratio:.4f}")
         rotq = R.from_rotvec(rvec.reshape(1,3)).as_quat() # Convert rotation vector to quaternion in shape (1,4) [x,y,z,w]
         # tvec = tvec.reshape(1,3) # Reshape translation vector
         r_list.append(rvec)
         t_list.append(tvec)
 
         # Get camera pose groudtruth
-        # ground_truth = images_df.loc[images_df["IMAGE_ID"]==idx]
         ground_truth = images_df.iloc[idx]
         rotq_gt = ground_truth[["QX","QY","QZ","QW"]].values
         tvec_gt = ground_truth[["TX","TY","TZ"]].values
