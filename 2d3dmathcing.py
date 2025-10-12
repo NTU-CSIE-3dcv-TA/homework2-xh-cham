@@ -115,18 +115,21 @@ def visualization(o3d_parameters, points3D_df):
     # === 4. 一起繪出 ===
     o3d.visualization.draw_geometries([pcd, traj, *cameras], up=[0, -1, 0], front=[0,0,-1], zoom=0.4)
 
+def sort_by_image_id(images_df):
+    tmp = lambda x: (0 if x.startswith("train") else 1,  # train 放前面，valid 放後面
+            int(x.split(".")[0].split("_img")[-1]))  # 按編號排序
+    images_df = images_df.sort_values(
+        by="NAME",
+        key=lambda col: col.apply(tmp)
+    )
+    return images_df
+
 if __name__ == "__main__":
     # Load data
     PREFIX = "" if os.getcwd().endswith("homework2-xh-cham") else "homework2-xh-cham/"
     images_df = pd.read_pickle(f"{PREFIX}data/images.pkl")
     # sort images_df by the number at the end of NAME column
     # NAME example: train_img1.jpg, train_img100.jpg, valid_img5.jpg
-    tmp = lambda x: (0 if x.startswith("train") else 1,  # train 放前面
-            int(x.split(".")[0].split("_img")[-1]))  # 按編號排序
-    images_df = images_df.sort_values(
-        by="NAME",
-        key=lambda col: col.apply(tmp)
-    )
     train_df = pd.read_pickle(f"{PREFIX}data/train.pkl")
     points3D_df = pd.read_pickle(f"{PREFIX}data/points3D.pkl")
     point_desc_df = pd.read_pickle(f"{PREFIX}data/point_desc.pkl")
@@ -135,6 +138,7 @@ if __name__ == "__main__":
     kp_model = np.array(desc_df["XYZ"].to_list())
     desc_model = np.array(desc_df["DESCRIPTORS"].to_list()).astype(np.float32)
 
+    images_df = sort_by_image_id(images_df)
 
     IMAGE_ID_LIST = list(range(163, 293))  # 0-163: train, 163:293 valid
     # IMAGE_ID_LIST = list(range(1,294))
@@ -195,5 +199,8 @@ if __name__ == "__main__":
         param.extrinsic = c2w
         param.intrinsic = intrinsic
         o3d_parameters.append(param)
-    np.save('camera_params.npy', o3d_parameters)
+    # np.save('camera_params.npy', o3d_parameters)
+    o3d_parameters_list = [[param.extrinsic, param.intrinsic.intrinsic_matrix] for param in o3d_parameters]
+    o3d_parameters_df = pd.DataFrame(o3d_parameters_list, columns=["extrinsic", "intrinsic"])
+    pd.to_pickle(o3d_parameters_df, f'{PREFIX}camera_params.pkl')
     visualization(o3d_parameters, points3D_df)
