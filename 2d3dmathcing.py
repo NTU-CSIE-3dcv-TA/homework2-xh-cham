@@ -184,7 +184,7 @@ if __name__ == "__main__":
 
     images_df = sort_by_image_id(images_df)
 
-    IMAGE_ID_LIST = list(range(163, 293, 15))  # 0-163: train, 163:293 valid
+    IMAGE_ID_LIST = list(range(163, 293))  # 0-163: train, 163:293 valid
     # IMAGE_ID_LIST = list(range(1,294))
     r_list = []
     t_list = []
