@@ -102,7 +102,17 @@ def main():
     images_df = sort_by_image_id(images_df)
     
     camera_params_df = pd.read_pickle(f"{PREFIX}camera_params.pkl")
-    cube_vertices = np.load(f'{PREFIX}cube_vertices.npy')
+    if os.path.exists(f"{PREFIX}cube_vertices.npy"):
+        cube_vertices = np.load(f'{PREFIX}cube_vertices.npy')
+    else:
+        cube_vertices = np.array([[ 0.85,       -0.56,        0.91      ],
+        [ 1.11994695, -0.21448366,  0.80877203],
+        [ 1.18825788, -0.76004595,  1.12923326],
+        [ 1.45820483, -0.41452961,  1.02800529],
+        [ 0.72667016, -0.35239442,  1.28972315],
+        [ 0.99661711, -0.00687808,  1.18849518],
+        [ 1.06492804, -0.55244037,  1.50895642],
+        [ 1.33487499, -0.20692403,  1.40772844]])
     # cube_transform_mat = np.load(f'{PREFIX}cube_transform_mat.npy')  # (3,4)
 
     voxel_grid_cube = VoxelGridCube(cube_vertices)
